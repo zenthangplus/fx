@@ -31,6 +31,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/atomic"
 	"go.uber.org/fx"
 	"go.uber.org/fx/fxevent"
 	"go.uber.org/fx/fxtest"
@@ -1239,7 +1240,7 @@ func TestHookAnnotations(t *testing.T) {
 				in.WriteString("decorated")
 				return in
 			},
-			fx.OnStart(func(_ context.Context, a A) error {
+			fx.OnStart(func(_ context.Context, _ A) error {
 				called = assert.Equal(t, "decorated", buf.String())
 				return nil
 			}),
@@ -1370,14 +1371,6 @@ func TestHookAnnotationFailures(t *testing.T) {
 			),
 		},
 		{
-			name:        "with hook that doesn't return an error",
-			errContains: "must return only an error",
-			annotation: fx.Annotate(
-				func() A { return nil },
-				fx.OnStart(func(context.Context) {}),
-			),
-		},
-		{
 			name:        "with constructor that errors",
 			errContains: "hooks should not be installed",
 			useNew:      true,
@@ -1400,11 +1393,23 @@ func TestHookAnnotationFailures(t *testing.T) {
 			),
 		},
 		{
-			name:        "without context.Context as first parameter",
-			errContains: "must be context.Context",
+			name:        "invalid return: non-error return",
+			errContains: "optional hook return may only be error",
 			annotation: fx.Annotate(
 				func() A { return nil },
-				fx.OnStart(func() {}),
+				fx.OnStart(func(context.Context) any {
+					return nil
+				}),
+			),
+		},
+		{
+			name:        "invalid return: too many returns",
+			errContains: "optional hook return may only be error",
+			annotation: fx.Annotate(
+				func() A { return nil },
+				fx.OnStart(func(context.Context) (any, any) {
+					return nil, nil
+				}),
 			),
 		},
 		{
@@ -1447,6 +1452,62 @@ func TestHookAnnotationFailures(t *testing.T) {
 			err := app.Start(context.Background())
 			require.Error(t, err)
 			require.Contains(t, err.Error(), tt.errContains)
+		})
+	}
+}
+
+func TestHookAnnotationFunctionFlexibility(t *testing.T) {
+	type A interface{}
+
+	called := atomic.NewBool(false)
+	table := []struct {
+		name       string
+		annotation interface{}
+	}{
+		{
+			name: "without error return",
+			annotation: fx.Annotate(
+				func() A {
+					return nil
+				},
+				fx.OnStart(func(context.Context) {
+					called.Store(true)
+				}),
+			),
+		},
+		{
+			name: "without context param",
+			annotation: fx.Annotate(
+				func() A { return nil },
+				fx.OnStart(func() error {
+					called.Store(true)
+					return nil
+				}),
+			),
+		},
+		{
+			name: "without context param or error return",
+			annotation: fx.Annotate(
+				func() A { return nil },
+				fx.OnStart(func() {
+					called.Store(true)
+				}),
+			),
+		},
+	}
+
+	for _, tt := range table {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			called.Store(false)
+
+			opts := fx.Options(
+				fx.Provide(tt.annotation),
+				fx.Invoke(func(A) {}),
+			)
+
+			fxtest.New(t, opts).RequireStart().RequireStop()
+			require.True(t, called.Load())
 		})
 	}
 }

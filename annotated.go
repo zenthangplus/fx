@@ -250,23 +250,14 @@ func (la *lifecycleHookAnnotation) apply(ann *annotated) error {
 		)
 	}
 
-	if ft.NumIn() < 1 || ft.In(0) != _typeOfContext {
-		return fmt.Errorf(
-			"first argument of hook must be context.Context, got %v (%T)",
-			la.Target,
-			la.Target,
-		)
-	}
-
-	hasOut := ft.NumOut() == 1
-	returnsErr := hasOut && ft.Out(0) == _typeOfError
-
-	if !hasOut || !returnsErr {
-		return fmt.Errorf(
-			"hooks must return only an error type, got %v (%T)",
-			la.Target,
-			la.Target,
-		)
+	if n := ft.NumOut(); n > 0 {
+		if n > 1 || ft.Out(0) != _typeOfError {
+			return fmt.Errorf(
+				"optional hook return may only be error, got %v (%T)",
+				la.Target,
+				la.Target,
+			)
+		}
 	}
 
 	if ft.IsVariadic() {
@@ -428,13 +419,23 @@ func (la *lifecycleHookAnnotation) Build(results ...reflect.Type) reflect.Value 
 		}
 	}
 
-	origFn := reflect.ValueOf(la.Target)
-	newFnType := reflect.FuncOf(params, nil, false)
+	var (
+		origFn    = reflect.ValueOf(la.Target)
+		origFnT   = origFn.Type()
+		newFnType = reflect.FuncOf(params, nil, false)
+	)
+
 	newFn := reflect.MakeFunc(newFnType, func(args []reflect.Value) []reflect.Value {
-		var lc Lifecycle
-		lc, args = paramMap(args)
+		lc, args := paramMap(args)
+
 		hookFn := func(ctx context.Context) (err error) {
-			args[0] = reflect.ValueOf(ctx)
+			// If the hook function has multiple parameters, and the first
+			// parameter is a context, inject the provided context.
+			if origFnT.NumIn() > 0 {
+				if origFnT.In(0).AssignableTo(_typeOfContext) {
+					args[0] = reflect.ValueOf(ctx)
+				}
+			}
 
 			results := origFn.Call(args)
 			if len(results) > 0 && results[0].Type() == _typeOfError {
